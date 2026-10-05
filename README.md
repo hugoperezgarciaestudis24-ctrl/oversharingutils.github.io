@@ -1,4 +1,4 @@
-# HUELLA // IA contra l’oversharing
+# OverSharing Utils
 
 Webapp educativa per al projecte de síntesi sobre oversharing, privacitat digital i cookies rastrejadores. Té una interfície d’estil terminal i funciona com una pàgina estàtica, sense instal·lació ni servidor.
 
