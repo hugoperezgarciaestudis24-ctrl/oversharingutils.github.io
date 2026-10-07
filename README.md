@@ -1,39 +1,31 @@
 # OversharingUtils
 
-Webapp educativa per al projecte de síntesi sobre oversharing, privacitat digital i cookies rastrejadores. Té una interfície d’estil terminal i funciona com una pàgina estàtica, sense instal·lació ni servidor.
+Projecte educatiu de Sergi i Hugo per aprendre sobre el fet de compartir massa informació (oversharing), les galetes i la privacitat digital. El web té una interfície inspirada en una terminal i inclou continguts en català, castellà i anglès.
 
-## Funcions
+## Com obrir el projecte
 
-- Explica què és l’oversharing i els riscos de compartir dades personals.
-- Presenta un cas documentat de ciberassetjament a Telde i el cas de Cambridge Analytica.
-- Explica com funcionen les cookies i inclou una simulació interactiva de peticions HTTP.
-- Analitza text amb regles senzilles que assenyalen ubicacions, rutines, dades de contacte i enllaços.
-- Permet seleccionar o arrossegar imatges per veure’n una previsualització local i afegir-hi una descripció.
-- Ofereix els idiomes castellà, català i anglès, i els temes fosc i clar.
-- Inclou consells de privacitat i referències en castellà o català, com ara l’AEPD, RTVC, la FTC en castellà i Cadena SER Almería.
+No cal instal·lar res ni fer servir eines de compilació. Obre `outputs/index.html` amb un navegador. Algunes funcions, com ara la consulta de l’adreça IP, poden dependre dels permisos de xarxa i de la disponibilitat del servei extern.
 
-## Com obrir-la
+## Què inclou
 
-Obre [`index.html`](index.html) amb un navegador web actual. No cal compilar, instal·lar dependències ni iniciar un servidor. La webapp està continguda en aquest únic fitxer HTML.
+- Una explicació senzilla sobre l’oversharing i exemples documentats a Espanya.
+- Un simulador educatiu de galetes essencials i de seguiment.
+- Una consola interactiva amb dades locals del navegador, una galeta fictícia i una consulta opcional de l’adreça IP pública.
+- Una revisió local d’imatges: mostra una vista prèvia, llegeix algunes metadades EXIF i fa servir detectors d’imatge si el navegador els ofereix. Permet baixar una còpia processada per eliminar-ne les metadades.
+- Canvi d’idioma, tema i color d’accent, i un Kids Mode amb consells i una pregunta interactiva.
+- Animacions que apareixen en desplaçar-se pel web.
 
-## Escàner i imatges
+## Privacitat i limitacions
 
-Escriu o enganxa un exemple al camp de text i prem **Analitzar borrador** o **Retorn**. Fes servir **Maj+Retorn** per afegir una línia. El botó **Neteja** esborra el text, la descripció i les imatges de la sessió.
+La majoria de les demostracions s’executen al navegador. La consola no envia les dades del navegador ni crea una galeta real. Per consultar l’adreça IP pública, marca la casella de consentiment i prem el botó: el web contacta amb `api.ipify.org`, que rep la sol·licitud i pot veure l’adreça IP. La consulta no es fa automàticament.
 
-Pots seleccionar imatges amb el botó **Afegeix imatges** o arrossegar-les a la zona de càrrega. S’admeten fitxers d’imatge de fins a 8 MB cadascun. Les previsualitzacions es creen al navegador i pots treure cada imatge amb el botó ×.
+La revisió d’imatges no és un model d’IA. Llegeix algunes metadades i només pot analitzar el contingut visual si el navegador ofereix les API corresponents; els resultats poden passar per alt informació. La imatge no es puja a cap servidor d’aquest projecte.
 
-La demo no envia ni desa les imatges, no llegeix els píxels ni n’extreu text. Descriu manualment els detalls que vols revisar. L’escàner és una comprovació heurística local, no una IA real ni un substitut del criteri personal.
+## Fitxers
 
-Les preferències d’idioma i tema es desen a l’emmagatzematge local del navegador.
+- `outputs/index.html`: pàgina completa, estils i JavaScript del prototip.
+- `README.md`: descripció i guia d’ús.
 
-## Estructura
+## Autors
 
-```text
-outputs/
-├── index.html   # Webapp autocontinguda: HTML, estils i JavaScript
-└── README.md    # Aquest document
-```
-
-## Fonts
-
-La pàgina enllaça a recursos de l’Agència Espanyola de Protecció de Dades (AEPD), una notícia de RTVC sobre el cas de Telde, informació en castellà de la Comissió Federal de Comerç dels EUA sobre Facebook/Cambridge Analytica i una crònica de Cadena SER Almería sobre Strava. Els enllaços apareixen al final de la pàgina.
+Sergi i Hugo · Projecte de síntesi
