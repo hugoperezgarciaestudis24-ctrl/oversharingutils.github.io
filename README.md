@@ -1,4 +1,4 @@
- <img src="outputs/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="50"> # OversharingUtils
+# OversharingUtils  <img src="outputs/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="50">
 
 Projecte educatiu de Sergi i Hugo per aprendre sobre el fet de compartir massa informació (oversharing), les galetes i la privacitat digital. La interfície és més clara i accessible, amb una consola educativa petita i continguts en català, castellà i anglès. Fa servir els components i estils locals de Lumen UI.
 
