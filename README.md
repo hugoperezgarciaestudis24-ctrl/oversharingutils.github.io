@@ -1,10 +1,14 @@
 # OversharingUtils
 
-Projecte educatiu de Sergi i Hugo per aprendre sobre el fet de compartir massa informació (oversharing), les galetes i la privacitat digital. El web té una interfície inspirada en una terminal i inclou continguts en català, castellà i anglès.
+<img src="outputs/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="112">
+
+Projecte educatiu de Sergi i Hugo per aprendre sobre el fet de compartir massa informació (oversharing), les galetes i la privacitat digital. La interfície és més clara i accessible, amb una consola educativa petita i continguts en català, castellà i anglès. Fa servir els components i estils locals de Lumen UI.
 
 ## Com obrir el projecte
 
-No cal instal·lar res ni fer servir eines de compilació. Obre `outputs/index.html` amb un navegador. Algunes funcions, com ara la consulta de l’adreça IP, poden dependre dels permisos de xarxa i de la disponibilitat del servei extern.
+Obre `outputs/index.html` amb un navegador. Els fitxers de Lumen ja estan compilats i desats a `outputs/`, de manera que no cal connexió a internet per carregar el disseny. Algunes funcions, com ara la consulta opcional de l’adreça IP, necessiten connexió.
+
+Per tornar a compilar els components de Lumen després de modificar `outputs/lumen-entry.js`, instal·la les dependències i executa `pnpm run build:ui`.
 
 ## Què inclou
 
@@ -14,6 +18,7 @@ No cal instal·lar res ni fer servir eines de compilació. Obre `outputs/index.h
 - Una revisió local d’imatges: mostra una vista prèvia, llegeix algunes metadades EXIF i fa servir detectors d’imatge si el navegador els ofereix. Permet baixar una còpia processada per eliminar-ne les metadades.
 - Canvi d’idioma, tema i color d’accent, i un Kids Mode amb consells i una pregunta interactiva.
 - Animacions que apareixen en desplaçar-se pel web.
+- Interfície adaptable a mòbils, amb focus visible i suport per a la preferència de reducció de moviment del dispositiu.
 
 ## Privacitat i limitacions
 
@@ -23,7 +28,13 @@ La revisió d’imatges no és un model d’IA. Llegeix algunes metadades i nom�
 
 ## Fitxers
 
-- `outputs/index.html`: pàgina completa, estils i JavaScript del prototip.
+- `outputs/index.html`: estructura i contingut de la pàgina.
+- `outputs/assets/oversharingutils-logo.svg`: logotip vectorial utilitzat a la capçalera i al README.
+- `outputs/styles.css`: estils i animacions.
+- `outputs/script.js`: interaccions i lògica del prototip.
+- `outputs/lumen-entry.js`: registre dels components Lumen que s’utilitzen.
+- `outputs/lumen-ui.js` i `outputs/lumen-ui.css`: compilació local dels components i estils de Lumen.
+- `package.json` i `pnpm-lock.yaml`: dependències i ordre de compilació dels components.
 - `README.md`: descripció i guia d’ús.
 
 ## Autors
