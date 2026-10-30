@@ -1,6 +1,6 @@
-# OversharingUtils
+# OversharingUtils <img src="/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="112">
 
-<img src="/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="112">
+
 
 Projecte educatiu de Sergi i Hugo sobre l’oversharing, les galetes i la privacitat digital. Inclou explicacions, demostracions interactives i una revisió d’imatges. La interfície es pot veure en català, castellà i anglès, i permet canviar el tema i el color d’accent.
 
