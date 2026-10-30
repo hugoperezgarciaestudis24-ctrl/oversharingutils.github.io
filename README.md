@@ -1,4 +1,4 @@
-# OversharingUtils <img src="/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="112">
+# OversharingUtils <img src="/assets/oversharingutils-logo.svg" alt="Logotip d’OversharingUtils" width="56">
 
 
 
