@@ -79,4 +79,4 @@ Human s’utilitza per a la detecció de rostres; DETR per al reconeixement d’
 
 ## Autors
 
-Sergi i Hugo · Projecte de síntesi
+Sergi i Hugo · OVSU Team 2026
