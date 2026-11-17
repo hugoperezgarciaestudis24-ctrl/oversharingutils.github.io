@@ -27,7 +27,20 @@ buttons.forEach(b=>b.addEventListener('click',()=> {
 }));
 const imageInput=document.getElementById('imageInput'),dropZone=document.getElementById('dropZone'),imagePreview=document.getElementById('imagePreview'),previewPlaceholder=document.getElementById('previewPlaceholder'),metadataOutput=document.getElementById('metadataOutput'),stripButton=document.getElementById('stripButton');
 let selectedImage=null,previewUrl=null,currentMetadata={},visualResult=null;
-let localClassifierPromise=null,localScenePromise=null,localOcrWorkerPromise=null,localHumanPromise=null,exifrPromise=null;
+let exifrPromise=null;
+let imageSelectionVersion=0;
+let quickScanVersion=-1,quickScanCanvas=null;
+function getQuickScanCanvas() {
+  if(quickScanVersion===imageSelectionVersion&&quickScanCanvas)return quickScanCanvas;
+  const maxDimension=1600,
+  scale=Math.min(1,maxDimension/Math.max(imagePreview.naturalWidth,imagePreview.naturalHeight));
+  quickScanCanvas=document.createElement('canvas');
+  quickScanCanvas.width=Math.max(1,Math.round(imagePreview.naturalWidth*scale));
+  quickScanCanvas.height=Math.max(1,Math.round(imagePreview.naturalHeight*scale));
+  quickScanCanvas.getContext('2d')?.drawImage(imagePreview,0,0,quickScanCanvas.width,quickScanCanvas.height);
+  quickScanVersion=imageSelectionVersion;
+  return quickScanCanvas
+}
 // Llegeix alguns camps EXIF d’un JPEG sense pujar la imatge.
 function readExif(bytes) {
   let pos=2;
@@ -134,10 +147,19 @@ function getExifParser() {
   }
   return exifrPromise
 }
+function exifCoordinate(value,reference) {
+  const parts=Array.isArray(value)?value.map(Number):[Number(value)];
+  if(!parts.length||parts.some(part=>!Number.isFinite(part)))return null;
+  const decimal=parts.length>=3?parts[0]+parts[1]/60+parts[2]/3600:parts[0];
+  if(!Number.isFinite(decimal))return null;
+  return ['S','W'].includes(String(reference||'').toUpperCase())?-Math.abs(decimal):Math.abs(decimal)
+}
 async function readImageMetadata(file) {
   try {
     const exifr=await getExifParser();
-    const [allTags,gps]=await Promise.all([exifr.parse(file,true),exifr.gps(file)]);
+    // Parse only useful metadata blocks once; the previous full parse plus a
+    // separate GPS pass read the same image twice and included unused blocks.
+    const allTags=await exifr.parse(file,{xmp:true,iptc:true});
     const tags={};
     const displayNames={
       Make:'Fabricante',Model:'Modelo de cámara',LensModel:'Modelo de lente',
@@ -162,8 +184,20 @@ async function readImageMetadata(file) {
         extraCount++;
       }
     }
-    if(gps&&Number.isFinite(gps.latitude)&&Number.isFinite(gps.longitude)) {
-      tags['GPS: coordenadas']=`${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)}`;
+    let latitude=exifCoordinate(allTags?.GPSLatitude,allTags?.GPSLatitudeRef);
+    let longitude=exifCoordinate(allTags?.GPSLongitude,allTags?.GPSLongitudeRef);
+    if((latitude===null||longitude===null)&&(allTags?.GPSLatitude!==undefined||allTags?.GPSLongitude!==undefined)) {
+      // Keep the library's optimized decoder as a fallback for unusual EXIF layouts.
+      try {
+        const gps=await exifr.gps(file);
+        if(Number.isFinite(gps?.latitude)&&Number.isFinite(gps?.longitude)) {
+          latitude=gps.latitude;
+          longitude=gps.longitude;
+        }
+      } catch(error) {}
+    }
+    if(latitude!==null&&longitude!==null&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180) {
+      tags['GPS: coordenadas']=`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
     }
     // Some files expose GPS tags in the full parse even if the shortcut could not decode them.
     if(!tags['GPS: coordenadas']&&allTags?.GPSLatitude!==undefined&&allTags?.GPSLongitude!==undefined) {
@@ -181,7 +215,7 @@ async function readImageMetadata(file) {
   }
 }
 // Cerca indicis de privacitat amb les API que ofereix aquest navegador.
-async function scanVisibleContent(meta,cloud=null) {
+async function scanVisibleContent(meta,cloud=null,selectionVersion=imageSelectionVersion) {
   const signals=[],
   notes=[],reviewHints=[];
   let score=0;
@@ -210,6 +244,7 @@ async function scanVisibleContent(meta,cloud=null) {
   if(cloud) {
     supported=true;
     const text=(cloud.ocrText||'').replace(/\s+/g,' ').trim(),
+    compactCodes=text.replace(/(?<=\d)[ -]+(?=\d)/g,''),
     detections=(cloud.objects||[]).filter(item=>item&&item.label&&Number(item.score)>=0.55);
     if(detections.length)signals.push('Objetos detectados: '+detections.slice(0,12).map(item=>`${item.label} (${Math.round(item.score*100)}%)`).join(', ')+'.');
     const labels=new Set(detections.map(item=>String(item.label).toLowerCase().replace(/[_-]/g,' ').trim()));
@@ -231,6 +266,9 @@ async function scanVisibleContent(meta,cloud=null) {
       if(/\b(?:calle|avenida|av\.?|carrer|street|road|número|nº|c\.?p\.?|código postal|postcode)\b/i.test(text))findings.push('posible dirección');
       if(/\b(?:plaza|paseo|carretera|autovía|autopista|urbanización|bloque|portal|municipio|provincia|postal code|zip code)\b/i.test(text)&&!findings.includes('posible dirección'))findings.push('posible dirección o zona');
       if(/\b[-+]?\d{1,2}\.\d{3,}\s*[,;]\s*[-+]?\d{1,3}\.\d{3,}\b/.test(text))findings.push('posibles coordenadas geográficas escritas en la imagen');
+      if(/\b\d{8}\s*[- ]?\s*[A-HJ-NP-TV-Z]\b/i.test(compactCodes)||/\b[XYZ]\s*\d{7}\s*[- ]?\s*[A-HJ-NP-TV-Z]\b/i.test(compactCodes))findings.push('posible número de DNI o NIE');
+      if(/\b\d{4}\s*[- ]?\s*[BCDFGHJKLMNPRSTVWXYZ]{3}\b/i.test(compactCodes))findings.push('posible matrícula de vehículo');
+      if(/\bES\s*\d{2}(?:[\s-]*\d{4}){5}\b/i.test(compactCodes))findings.push('posible IBAN español');
       if(/\b(?:DNI|NIE|pasaporte|passport|IBAN|cuenta bancaria|tarjeta|card number|contraseña|password|usuario|username)\b/i.test(text))findings.push('posible documento o credencial');
       if(/\b(?:expediente|historial médico|diagnóstico|nómina|saldo|paciente|confidencial|privado|informe|resultado)\b/i.test(text))findings.push('posibles datos privados en documento o pantalla');
       if(findings.length) {
@@ -258,7 +296,7 @@ async function scanVisibleContent(meta,cloud=null) {
     if(!cloud) {
       if('TextDetector'in window) {
         supported=true;
-        const blocks=await new TextDetector().detect(imagePreview);
+        const blocks=await new TextDetector().detect(getQuickScanCanvas());
         if(blocks.length) {
           const txt=blocks.map(x=>x.rawValue||'').join(' '),
           sensitive=/(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b\+?\d[\d ()-]{7,}\d\b|\b(?:calle|avenida|carrer|street|número|nº|postal)\b)/i.test(txt);
@@ -273,7 +311,7 @@ async function scanVisibleContent(meta,cloud=null) {
   try {
     if('BarcodeDetector'in window) {
       supported=true;
-      const codes=await new BarcodeDetector().detect(imagePreview);
+      const codes=await new BarcodeDetector().detect(getQuickScanCanvas());
       if(codes.length) {
         signals.push('Se detectó un código QR o de barras que podría contener un enlace o datos.');
         score++
@@ -282,6 +320,7 @@ async function scanVisibleContent(meta,cloud=null) {
   } catch(e) {
     notes.push('El detector de códigos no está disponible aquí.')
   }
+  if(selectionVersion!==imageSelectionVersion)return;
   const result=document.getElementById('imageResult');
   const preliminary=!cloud;
   let label=preliminary?'REVISIÓN PRELIMINAR':score>=3?'REVISAR ANTES DE COMPARTIR':score>0||reviewHints.length?'HAY ELEMENTOS QUE REVISAR':'NO HAY INDICIOS CLAROS';
@@ -340,7 +379,12 @@ function loadImage(file) {
     metadataOutput.textContent='Formato no compatible. Selecciona JPG, PNG o WebP.';
     return
   }
+  const selectionVersion=++imageSelectionVersion;
   selectedImage=file;
+  externalAiConsent.checked=false;
+  externalAiResult.hidden=true;
+  externalAiResult.replaceChildren();
+  externalAiStatus.textContent=externalAiCopy(externalAiAvailable?'ready':'unavailable');
   updateLocalAiButton();
   if(previewUrl)URL.revokeObjectURL(previewUrl);
   previewUrl=URL.createObjectURL(file);
@@ -353,8 +397,10 @@ function loadImage(file) {
   imageResult.innerHTML='<h3>ANALIZANDO IMAGEN…</h3><p>La imagen se queda en tu navegador.</p><div class="scan-bar"><i></i></div>';
   const metadataTask=readImageMetadata(file);
   imagePreview.onload=async()=> {
+    if(selectionVersion!==imageSelectionVersion)return;
     document.getElementById('fileInfo').textContent=`${file.name} · ${imagePreview.naturalWidth} × ${imagePreview.naturalHeight} px · ${(file.size/1024).toFixed(1)} KB`;
     const metadataScan=await metadataTask;
+    if(selectionVersion!==imageSelectionVersion)return;
     const meta=metadataScan.tags||{};
     const hasGpsCoordinates=Boolean(meta?.['GPS: coordenadas']);
     const hasGpsTags=Object.keys(meta||{}).some(key=>key.toLowerCase().includes('gps'));
@@ -368,15 +414,18 @@ function loadImage(file) {
     metadataOutput.innerHTML=(meta&&Object.keys(meta).length?Object.entries(meta).map(([k,v])=>`<div class="meta-row"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join(''):'<span class="none">No se encontraron otros metadatos habituales.</span>')+locationNote;
     currentMetadata=meta||{}; visualResult=null;
     updateLocalAiButton();
-    scanVisibleContent(currentMetadata,visualResult).finally(()=> {
+    scanVisibleContent(currentMetadata,visualResult,selectionVersion).finally(()=> {
+      if(selectionVersion!==imageSelectionVersion)return;
       imageResult.classList.remove('is-scanning'); imageResult.classList.add('is-done')
-    }).then(()=>{
-      // Start the optional on-device model after the fast metadata and browser checks.
-      // Model files are fetched from public CDNs once and cached by the browser.
-      if(selectedImage===file&&!localAiButton.hasAttribute('disabled')) runLocalImageAnalysis();
     })
+    if(selectionVersion===imageSelectionVersion) localAiStatus.textContent={
+      es:'Metadatos revisados. Pulsa el botón si quieres iniciar el análisis visual local.',
+      ca:'Metadades revisades. Prem el botó si vols iniciar l’anàlisi visual local.',
+      en:'Metadata checked. Press the button to start the local visual analysis.'
+    }[lang]||'Metadatos revisados.';
   };
   imagePreview.onerror=()=> {
+    if(selectionVersion!==imageSelectionVersion)return;
     document.getElementById('imageResult').innerHTML='<h3 class="danger">NO SE PUDO LEER</h3><p>Prueba con otra imagen JPG, PNG o WebP.</p>'
   }
   // Registra los eventos antes de asignar el blob para no perder una carga rápida.
@@ -401,159 +450,137 @@ stripButton.addEventListener('click',()=> {
   }; img.src=previewUrl
 });
 const localAiButton=document.getElementById('localAiButton'),localAiStatus=document.getElementById('localAiStatus');
+const externalAiConsent=document.getElementById('externalAiConsent'),externalAiButton=document.getElementById('externalAiButton'),externalAiStatus=document.getElementById('externalAiStatus'),externalAiResult=document.getElementById('externalAiResult'),externalAiKey=document.getElementById('externalAiKey');
+const langSelect=document.getElementById('languageSelect');
 let localAnalysisBusy=false;
-function updateLocalAiButton() {setDisabled(localAiButton,!selectedImage)}
-function getLocalClassifier() {
-  if(!localClassifierPromise) {
-    localClassifierPromise=(async()=> {
-      const {pipeline}=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm');
-      return pipeline('object-detection','Xenova/detr-resnet-50');
-    })().catch(error=> {localClassifierPromise=null;throw error});
-  }
-  return localClassifierPromise
+let localImageAnalyzerPromise=null;
+let externalAiAvailable=false,externalAiConfigured=false,externalAiBusy=false;
+function externalAiCopy(key) {
+  const lang=langSelect.value;
+  const copy={
+    ready:{es:'Servidor local disponible. Introduce tu clave o usa la configurada en el servidor; después acepta el envío.',ca:'Servidor local disponible. Introdueix la teva clau o fes servir la configurada al servidor; després accepta l’enviament.',en:'Local server available. Enter your key or use the one configured on the server, then consent to sending.'},
+    unavailable:{es:'No disponible. Inicia el servidor local; GitHub Pages no tiene un backend configurado para esta API.',ca:'No disponible. Inicia el servidor local; GitHub Pages no té un backend configurat per a aquesta API.',en:'Unavailable. Start the local server; GitHub Pages has no backend configured for this API.'},
+    consent:{es:'La imagen solo se enviará a Google después de marcar el consentimiento y pulsar el botón.',ca:'La imatge només s’enviarà a Google després de marcar el consentiment i prémer el botó.',en:'The image will only be sent to Google after you check consent and press the button.'},
+    sending:{es:'Preparando una copia reducida y enviándola a Gemini…',ca:'Preparant una còpia reduïda i enviant-la a Gemini…',en:'Preparing a reduced copy and sending it to Gemini…'},
+    done:{es:'Análisis externo terminado. La respuesta es orientativa; revisa las pistas por tu cuenta.',ca:'Anàlisi externa acabada. La resposta és orientativa; revisa les pistes pel teu compte.',en:'External analysis complete. Treat the response as guidance and check its clues yourself.'},
+    error:{es:'No se pudo completar el análisis externo.',ca:'No s’ha pogut completar l’anàlisi externa.',en:'The external analysis could not be completed.'}
+  };
+  return copy[key][lang]||copy[key].es
 }
-// CLIP compara la foto con tipos generales de escenas; no busca una dirección exacta.
-function getLocalSceneClassifier() {
-  if(!localScenePromise) {
-    localScenePromise=(async()=> {
-      const {pipeline}=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm');
-      return pipeline('zero-shot-image-classification','Xenova/clip-vit-base-patch32');
-    })().catch(error=>{localScenePromise=null;throw error});
-  }
-  return localScenePromise
+function updateExternalAiControls() {
+  const keyAvailable=externalAiConfigured||Boolean(externalAiKey.value.trim());
+  externalAiConsent.disabled=!externalAiAvailable||!selectedImage||!keyAvailable||externalAiBusy;
+  setDisabled(externalAiButton,!externalAiAvailable||!selectedImage||!keyAvailable||!externalAiConsent.checked||externalAiBusy)
 }
-const sceneOptions=[
-  {id:'street',prompt:'a street, road, or city intersection'},
-  {id:'building',prompt:'the exterior of a building or a building facade'},
-  {id:'park',prompt:'a public park or garden'},
-  {id:'beach',prompt:'a beach or coastline'},
-  {id:'landscape',prompt:'a mountain, countryside, or natural landscape'},
-  {id:'monument',prompt:'a monument, famous landmark, or historic site'},
-  {id:'commercial',prompt:'a shop, storefront, or commercial area'},
-  {id:'bridge',prompt:'a bridge or large transport structure'},
-  {id:'station',prompt:'a train station, airport, or transport terminal'},
-  {id:'indoor',prompt:'an indoor room or interior'},
-  {id:'portrait',prompt:'a close-up portrait of one person'},
-  {id:'group',prompt:'a group photo of several people'},
-  {id:'object',prompt:'a close-up photo of an object'},
-  {id:'document',prompt:'a document or a text-heavy screen'},
-  {id:'other',prompt:'something else, not a recognizable place'}
-];
+function updateLocalAiButton() {setDisabled(localAiButton,!selectedImage);updateExternalAiControls()}
+externalAiKey.addEventListener('input',()=> {
+  updateExternalAiControls();
+  externalAiStatus.textContent=externalAiKey.value.trim()||externalAiConfigured?externalAiCopy('consent'):externalAiCopy('ready')
+});
+externalAiConsent.addEventListener('change',()=> {
+  updateExternalAiControls();
+  externalAiStatus.textContent=externalAiConsent.checked?externalAiCopy('consent'):externalAiAvailable?externalAiCopy('ready'):externalAiCopy('unavailable')
+});
+langSelect.addEventListener('change',()=> {
+  externalAiStatus.textContent=externalAiAvailable?(externalAiConsent.checked?externalAiCopy('consent'):externalAiCopy('ready')):externalAiCopy('unavailable')
+});
+fetch('/api/image-analysis-config',{cache:'no-store'}).then(response=>response.ok?response.json():null).then(config=> {
+  externalAiAvailable=Boolean(config?.available);
+  externalAiConfigured=Boolean(config?.configured);
+  externalAiStatus.textContent=externalAiCopy(externalAiAvailable?'ready':'unavailable');
+  updateExternalAiControls()
+}).catch(()=> {
+  externalAiAvailable=false; externalAiStatus.textContent=externalAiCopy('unavailable'); updateExternalAiControls()
+});
 const sceneNames={
   es:{street:'calle o carretera',building:'edificio',park:'parque o jardín',beach:'playa o costa',landscape:'paisaje natural o de montaña',monument:'monumento o lugar histórico',commercial:'comercio o zona comercial',bridge:'puente o infraestructura',station:'estación o terminal',indoor:'interior',portrait:'retrato de una persona',group:'grupo de personas',object:'objeto en primer plano',document:'documento o pantalla con texto',other:'otro tipo de imagen'},
   ca:{street:'carrer o carretera',building:'edifici',park:'parc o jardí',beach:'platja o costa',landscape:'paisatge natural o de muntanya',monument:'monument o lloc històric',commercial:'comerç o zona comercial',bridge:'pont o infraestructura',station:'estació o terminal',indoor:'interior',portrait:'retrat d’una persona',group:'grup de persones',object:'objecte en primer pla',document:'document o pantalla amb text',other:'un altre tipus d’imatge'},
   en:{street:'street or road',building:'building',park:'park or garden',beach:'beach or coast',landscape:'natural or mountain landscape',monument:'monument or historic site',commercial:'shop or commercial area',bridge:'bridge or infrastructure',station:'station or terminal',indoor:'indoor scene',portrait:'single-person portrait',group:'group of people',object:'close-up object',document:'document or text-heavy screen',other:'another kind of image'}
 };
-// Human és un detector de rostres del projecte vladmandic/human, publicat a GitHub.
-function getGithubFaceDetector() {
-  if(!localHumanPromise) {
-    localHumanPromise=(async()=> {
-      const {Human}=await import('https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/dist/human.esm.js');
-      const human=new Human({
-        backend:'webgl',
-        modelBasePath:'https://vladmandic.github.io/human-models/models/',
-        cacheModels:true,
-        debug:false,
-        face:{
-          enabled:true,
-          detector:{enabled:true,maxDetected:10,rotation:false,minConfidence:0.82,minSize:22,iouThreshold:0.35},
-          mesh:{enabled:true,keepInvalid:false},attention:{enabled:false},iris:{enabled:false},
-          description:{enabled:false},emotion:{enabled:false},antispoof:{enabled:false},
-          liveness:{enabled:false},gear:{enabled:false}
-        },
-        body:{enabled:false},hand:{enabled:false},object:{enabled:false},
-        gesture:{enabled:false},segmentation:{enabled:false}
-      });
-      await human.load();
-      return human
-    })().catch(error=> {localHumanPromise=null;throw error});
-  }
-  return localHumanPromise
-}
-function getLocalOcrWorker(onProgress) {
-  if(!localOcrWorkerPromise) {
-    localOcrWorkerPromise=(async()=> {
-      const {createWorker}=await import('https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/+esm');
-      return createWorker('eng+spa',1,{logger:message=> {
-        if(message.status==='loading language traineddata')onProgress('Descargando datos OCR…');
-        else if(message.status==='recognizing text')onProgress('Leyendo texto de la imagen…');
-      }});
-    })().catch(error=> {localOcrWorkerPromise=null;throw error});
-  }
-  return localOcrWorkerPromise
-}
-function makeAnalysisCanvas(image) {
-  const scale=Math.min(1,512/Math.max(image.naturalWidth,image.naturalHeight));
-  const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));
-  canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);return canvas
-}
 localAiButton.addEventListener('click',runLocalImageAnalysis);
+externalAiButton.addEventListener('click',runExternalImageAnalysis);
+async function makeExternalImagePayload() {
+  const maxDimension=1280,scale=Math.min(1,maxDimension/Math.max(imagePreview.naturalWidth,imagePreview.naturalHeight));
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.max(1,Math.round(imagePreview.naturalWidth*scale));
+  canvas.height=Math.max(1,Math.round(imagePreview.naturalHeight*scale));
+  const context=canvas.getContext('2d');
+  if(!context)throw new Error('El navegador no pudo preparar una copia de la imagen.');
+  context.fillStyle='#fff'; context.fillRect(0,0,canvas.width,canvas.height);
+  context.drawImage(imagePreview,0,0,canvas.width,canvas.height);
+  const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo reducir la imagen.')),'image/jpeg',.82));
+  if(blob.size>2_000_000)throw new Error('La copia reducida supera el máximo de 2 MB. Prueba con una imagen más pequeña.');
+  const dataUrl=await new Promise((resolve,reject)=> {
+    const reader=new FileReader(); reader.onload=()=>resolve(String(reader.result||'')); reader.onerror=()=>reject(new Error('No se pudo leer la copia reducida.')); reader.readAsDataURL(blob)
+  });
+  return {mimeType:'image/jpeg',imageData:dataUrl.slice(dataUrl.indexOf(',')+1)}
+}
+async function runExternalImageAnalysis() {
+  if(!selectedImage||!externalAiAvailable||!externalAiConsent.checked||externalAiBusy||!imagePreview.complete||!imagePreview.naturalWidth)return;
+  const runVersion=imageSelectionVersion;
+  externalAiBusy=true; updateExternalAiControls();
+  externalAiResult.hidden=false; externalAiResult.replaceChildren();
+  const heading=document.createElement('h3'); heading.textContent=langSelect.value==='ca'?'ANÀLISI VISUAL AMB GEMINI…':langSelect.value==='en'?'GEMINI VISUAL ANALYSIS…':'ANÁLISIS VISUAL CON GEMINI…';
+  const progress=document.createElement('p'); progress.textContent=externalAiCopy('sending'); externalAiResult.append(heading,progress);
+  externalAiStatus.textContent=externalAiCopy('sending');
+  try {
+    const image=await makeExternalImagePayload();
+    const response=await fetch('/api/analyze-image',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({...image,apiKey:externalAiKey.value.trim(),language:langSelect.value})});
+    const result=await response.json();
+    if(!response.ok)throw new Error(result.error||externalAiCopy('error'));
+    if(runVersion!==imageSelectionVersion)return;
+    const resultTitle=document.createElement('h3'); resultTitle.textContent=langSelect.value==='ca'?'RESULTAT ORIENTATIU · GEMINI':langSelect.value==='en'?'GUIDANCE ONLY · GEMINI':'RESULTADO ORIENTATIVO · GEMINI';
+    const resultText=document.createElement('p'); resultText.className='external-ai-text'; resultText.textContent=result.text;
+    const modelNote=document.createElement('p'); modelNote.className='mini-note'; modelNote.textContent=`${langSelect.value==='ca'?'Model':langSelect.value==='en'?'Model':'Modelo'}: ${result.model||'Gemini'}.`;
+    externalAiResult.replaceChildren(resultTitle,resultText,modelNote);
+    externalAiStatus.textContent=externalAiCopy('done')
+  } catch(error) {
+    if(runVersion!==imageSelectionVersion)return;
+    externalAiResult.replaceChildren(); externalAiResult.hidden=true;
+    externalAiStatus.textContent=error.name==='AbortError'?externalAiCopy('error'):error.message||externalAiCopy('error')
+  } finally {
+    externalAiBusy=false; updateExternalAiControls()
+  }
+}
 async function runLocalImageAnalysis() {
   if(!selectedImage||localAnalysisBusy||!imagePreview.complete||!imagePreview.naturalWidth)return;
+  const runVersion=imageSelectionVersion;
   localAnalysisBusy=true;
   setDisabled(localAiButton,true);
   const result=document.getElementById('imageResult');
   result.innerHTML='<h3>PREPARANDO REVISIONES LOCALES…</h3><p>La primera carga de cada detector puede tardar. La imagen sigue en este dispositivo.</p><div class="scan-bar"><i></i></div>';
   try {
-    const canvas=makeAnalysisCanvas(imagePreview);
-    let objects=[],faces=null,scene=null,ocrText='';
-    const notes=[],engines=[];
-    // Cada motor se ejecuta por separado: un modelo que no carga no bloquea a los demás.
-    try {
-      localAiStatus.textContent='Cargando detector de objetos…';
-      const classifier=await getLocalClassifier();
-      localAiStatus.textContent='Buscando objetos visibles…';
-      objects=(await classifier(canvas,{threshold:0.45})).filter(item=>item.score>=0.45);
-      engines.push('objetos');
-    } catch(error) { notes.push('El detector de objetos no se pudo cargar.'); }
-    try {
-      localAiStatus.textContent='Cargando detector de rostros desde GitHub…';
-      const human=await getGithubFaceDetector();
-      localAiStatus.textContent='Buscando rostros…';
-      const faceResult=await human.detect(canvas);
-      // A high detector score and minimum box size reduce window/facade false positives.
-      faces=(faceResult.face||[]).filter(face=>{
-        const boxConfidence=Number(face.boxScore)||0;
-        const meshConfidence=Number(face.faceScore)||0;
-        const width=Number(face.size?.[0]??face.box?.[2])||0;
-        const height=Number(face.size?.[1]??face.box?.[3])||0;
-        return boxConfidence>=0.82&&meshConfidence>=0.72&&width>=22&&height>=22;
-      });
-      engines.push('rostros');
-    } catch(error) {
-      notes.push('No se pudo cargar el detector Human de rostros.');
-    }
-    try {
-      localAiStatus.textContent='Clasificando el tipo de escena…';
-      const sceneClassifier=await getLocalSceneClassifier();
-      const classified=await sceneClassifier(canvas,sceneOptions.map(item=>item.prompt),{top_k:5});
-      scene=classified.map(item=>({id:sceneOptions.find(option=>option.prompt===item.label)?.id||'other',score:Number(item.score)||0})).sort((a,b)=>b.score-a.score);
-      engines.push('tipo de escena');
-    } catch(error) { notes.push('No se pudo cargar el clasificador local de escenas.'); }
-    try {
-      const worker=await getLocalOcrWorker(status=>{localAiStatus.textContent=status});
-      const recognized=await worker.recognize(imagePreview);
-      const candidateText=(recognized.data.text||'').replace(/\s+/g,' ').trim();
-      const confidence=Number(recognized.data.confidence)||0;
-      // Ignora fragmentos con poca confianza para reducir falsas alertas.
-      if(confidence>=35&&/[\p{L}\p{N}]{3}/u.test(candidateText))ocrText=candidateText;
-      engines.push('OCR');
-    } catch(error) { notes.push('El lector de texto (OCR) no se pudo cargar.'); }
+    // La interfaz presenta los resultados; el módulo separado contiene los motores visuales.
+    if(!localImageAnalyzerPromise)localImageAnalyzerPromise=import('./modules/image-analysis.js').catch(error=>{
+      localImageAnalyzerPromise=null;
+      throw error;
+    });
+    const {analyzeImage}=await localImageAnalyzerPromise;
+    const {objects,faces,scene,ocrText,notes,engines}=await analyzeImage(imagePreview,status=>{
+      if(runVersion===imageSelectionVersion)localAiStatus.textContent=status;
+    });
+    if(runVersion!==imageSelectionVersion)return;
     if(!engines.length) {
       result.innerHTML='<h3 class="caution">NO SE PUDIERON CARGAR LOS DETECTORES</h3><p>Comprueba tu conexión e inténtalo de nuevo. Las comprobaciones de metadatos siguen disponibles y la imagen no se ha enviado.</p>';
       localAiStatus.textContent='No se cargó ningún detector. Hace falta conexión para descargar los modelos la primera vez.';
     } else {
       visualResult={objects,ocrText,faces,scene};
-      await scanVisibleContent(currentMetadata,visualResult);
+      await scanVisibleContent(currentMetadata,visualResult,runVersion);
+      if(runVersion!==imageSelectionVersion)return;
       if(notes.length)result.insertAdjacentHTML('beforeend','<p class="mini-note">'+notes.map(esc).join(' ')+'</p>');
       localAiStatus.textContent='Revisión terminada. Comprobaciones completadas: '+engines.join(', ')+'.';
     }
   } catch(error) {
+    if(runVersion!==imageSelectionVersion)return;
     result.innerHTML='<h3 class="caution">LA REVISIÓN SE INTERRUMPIÓ</h3><p>'+esc(error.message||'No se pudo preparar la imagen para el análisis.')+'</p><p>Los metadatos siguen disponibles y la imagen no se ha enviado.</p>';
     localAiStatus.textContent='La revisión no terminó. Puedes volver a intentarlo.';
   } finally {
     localAnalysisBusy=false;
     updateLocalAiButton();
+    // Si s'ha triat una altra foto mentre els models treballaven, analitza la més nova.
+    if(runVersion!==imageSelectionVersion&&selectedImage&&imagePreview.complete&&imagePreview.naturalWidth) {
+      queueMicrotask(()=>runLocalImageAnalysis());
+    }
   }
 }
 // Analizador de metadatos web: las conclusiones se derivan solo del HTML recibido.
@@ -606,6 +633,23 @@ async function analyzePageMetadata(event) {
 pageMetadataForm.addEventListener('submit',analyzePageMetadata);
 // lumen-button no siempre activa el envío nativo del formulario al hacer clic.
 pageMetadataButton.addEventListener('click',event=>{event.preventDefault();pageMetadataForm.requestSubmit()});
+// Detecta si la página se abrió desde el backend local o como archivo/GitHub Pages.
+async function showAnalyzerAvailability() {
+  if(location.protocol==='file:') {
+    pageMetadataStatus.textContent='Esta página está abierta como archivo. Abre http://localhost:3000 (o el puerto que indique el servidor) para usar el análisis de páginas y los modelos visuales.';
+    localAiStatus.textContent='Para cargar los detectores visuales, abre la página desde el servidor local y asegúrate de tener conexión a Internet.';
+    return;
+  }
+  try {
+    const response=await fetch('/api/health',{cache:'no-store'});
+    if(!response.ok)throw new Error('backend unavailable');
+    const health=await response.json();
+    if(health.ok)pageMetadataStatus.textContent='Servidor local conectado. El análisis de páginas y la revisión de imágenes están disponibles.';
+  } catch(error) {
+    pageMetadataStatus.textContent='Servidor de análisis no disponible. Esta versión estática puede revisar metadatos de imágenes, pero el análisis de páginas y Gemini requieren el servidor Node local.';
+  }
+}
+showAnalyzerAvailability();
 // Demostració del navegador i consulta de la IP amb permís explícit.
 const trackingOutput=document.getElementById('trackingOutput'),ipConsent=document.getElementById('ipConsent'),showRealIp=document.getElementById('showRealIp'),realIpOutput=document.getElementById('realIpOutput');
 ipConsent.addEventListener('change',()=> {
@@ -629,16 +673,26 @@ document.getElementById('runTracking').addEventListener('click',()=> {
   const started=performance.now(),rows=[['IP que vería un servidor','203.0.113.42 (EJEMPLO FICTICIO)'],['Cookie simulada','visitor_id='+id],['Navegador',navigator.userAgent],['Idioma',navigator.language],['Sistema informado',navigator.platform||'No informado'],['Pantalla',screen.width+' × '+screen.height],['Zona horaria',Intl.DateTimeFormat().resolvedOptions().timeZone]]; trackingOutput.innerHTML=rows.map(([k,v])=>`<div class="meta-row"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')+'<p>Lectura local completada en '+(performance.now()-started).toFixed(2)+' ms. No se envió ninguna petición.</p>'
 });
 // Textos i controls d’idioma, tema i color.
-const langSelect=document.getElementById('languageSelect'),themeToggle=document.getElementById('themeToggle'),accentColor=document.getElementById('accentColor');
+const themeToggle=document.getElementById('themeToggle'),accentColor=document.getElementById('accentColor');
 // Traduccions dels elements identificats amb data-i18n.
 const i18n= {
   brand: {
     ca:'OversharingUtils <b>// privacitat augmentada</b>',
     en:'OversharingUtils <b>// privacy awareness</b>'
   },
-  localAiIntro:{ca:'La revisió comença automàticament en triar una imatge i es processa en aquest dispositiu.',en:'The review starts automatically when you choose an image and runs on this device.'},
-  localAiButton:{ca:'[ Torna a analitzar amb IA local ]',en:'[ Run local AI analysis again ]'},
-  localAiDisclosure:{ca:'La imatge no s’envia. La primera vegada es descarreguen Exifr per a les metadades, Human per als rostres, DETR per als objectes, CLIP per classificar escenes generals i les dades OCR. Pot trigar i consumir dades; els models es desen a la memòria cau del navegador. CLIP no identifica adreces ni llocs exactes.',en:'The image is not uploaded. Exifr for metadata, Human for faces, DETR for objects, CLIP for broad scene categories, and OCR data download on first use. This may take time and data; models are cached in your browser. CLIP does not identify exact addresses or places.'},
+  localAiIntro:{ca:'En triar una imatge, en revisem les metadades. Prem el botó per iniciar l’anàlisi visual local.',en:'When you choose an image, we check its metadata. Press the button to start the local visual analysis.'},
+  advancedOptionsTitle:{ca:'Opcions avançades',en:'Advanced options'},
+  localAiButton:{ca:'[ Inicia l’anàlisi visual local ]',en:'[ Start local visual analysis ]'},
+  localAiDisclosure:{ca:'La imatge no s’envia. L’anàlisi visual local fa servir Human per als rostres, DETR per als objectes, CLIP per a les escenes i OCR per al text. La primera càrrega pot trigar i consumir dades; després, els models poden quedar a la memòria cau del navegador. La GPU s’utilitza quan és compatible.',en:'The image is not uploaded. Local visual analysis uses Human for faces, DETR for objects, CLIP for scenes, and OCR for text. The first load may take time and data; models may then stay in your browser cache. The GPU is used when supported.'},
+  externalAiIntro:{ca:'Anàlisi visual externa amb Gemini, semblant a algunes funcions de Lens: pot descriure l’escena, llegir text visible i indicar pistes del lloc. No cerca imatges similars ni garanteix identificar el lloc.',en:'External visual analysis with Gemini, similar to some Lens features: it can describe the scene, read visible text, and point out location clues. It does not search for matching images or guarantee identification.'},
+  externalAiKeyLabel:{ca:'Clau API de Gemini',en:'Gemini API key'},
+  externalAiGetKey:{ca:'Crea o consulta una clau gratuïta ↗',en:'Create or view a free API key ↗'},
+  externalAiKeyNote:{ca:'La clau només es manté en aquesta pestanya i s’envia al servidor local quan demanes l’anàlisi. No es desa al navegador ni al disc. En una xarxa Wi-Fi compartida, algú podria interceptar el trànsit HTTP: fes servir aquesta opció només en una xarxa de confiança.',en:'The key stays only in this tab and is sent to the local server when you request analysis. It is not saved in browser storage or to disk. On shared Wi-Fi, someone could intercept HTTP traffic: use this only on a trusted network.'},
+  externalAiConsent:{ca:'Accepto enviar una còpia reduïda d’aquesta imatge a Google Gemini per analitzar-la. La còpia no inclou les metadades EXIF; amb la quota gratuïta, Google pot fer servir les sol·licituds per millorar els seus productes.',en:'I agree to send a reduced copy of this image to Google Gemini for analysis. The copy excludes EXIF metadata; on the free tier, Google may use requests to improve its products.'},
+  externalAiButton:{ca:'[ Analitza amb Gemini (extern) ]',en:'[ Analyze with Gemini (external) ]'},
+  externalAiLoading:{ca:'Comprovant si el servidor local té l’API configurada…',en:'Checking whether the local server has the API configured…'},
+  externalAiPricing:{ca:'Quota gratuïta i límits actuals de Gemini ↗',en:'Gemini free tier and current limits ↗'},
+  imageTransparency:{ca:'<strong>Transparència:</strong> l’anàlisi local de metadades, rostres, objectes i text es processa en aquest dispositiu. L’opció externa només envia una còpia reduïda a Google si l’actives i ho acceptes expressament. Els models poden passar per alt detalls o equivocar-se; no identifiquen persones ni garanteixen una ubicació.',en:'<strong>Transparency:</strong> local metadata, face, object, and text analysis runs on this device. The external option sends a reduced copy to Google only if you turn it on and explicitly agree. Models can miss details or be wrong; they do not identify people or guarantee a location.'},
   githubHumanSource:{ca:'Detector de rostres: <a href="https://github.com/vladmandic/human" target="_blank" rel="noopener">Human a GitHub · llicència MIT ↗</a>',en:'Face detector: <a href="https://github.com/vladmandic/human" target="_blank" rel="noopener">Human on GitHub · MIT license ↗</a>'},
   project: {
     ca:'[ projecte de síntesi · Sergi + Hugo ]',
@@ -1295,12 +1349,17 @@ document.querySelectorAll('.btn,.top-button,.terminal-run').forEach(el=>el.addEv
 }));
 // Kids Mode: mostra o amaga la secció de consells per a infants.
 const kidsModeButton=document.getElementById('kidsModeButton'),kidsSection=document.getElementById('kids-mode'),kidsModeStatus=document.getElementById('kidsModeStatus');
+function updateKidsModeStatus() {
+  const active=document.body.classList.contains('kids-mode');
+  const lang=langSelect.value;
+  kidsModeStatus.textContent=active?(lang==='ca'?'Kids Mode està activat. Torna a prémer el botó per sortir.':lang==='en'?'Kids Mode is on. Press the button again to exit.':'Kids Mode está activado. Puedes volver a pulsar el botón para salir.'):'';
+}
 function setKidsMode(active) {
   document.body.classList.toggle('kids-mode',active);
   kidsSection.hidden=!active;
   kidsModeButton.setAttribute('aria-pressed',String(active));
   kidsModeButton.textContent=active?'Kids Mode ✓':'Kids Mode';
-  kidsModeStatus.textContent=active?(langSelect.value==='ca'?'Kids Mode està activat. Torna a prémer el botó per sortir.':langSelect.value==='en'?'Kids Mode is on. Press the button again to exit.':'Kids Mode está activado. Puedes volver a pulsar el botón para salir.'):'';
+  updateKidsModeStatus();
   if(active)kidsSection.scrollIntoView( {
     behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'
   });
@@ -1328,7 +1387,7 @@ let kidsQuizFinished=false;
 
 const kidsQuizContent={
   es:{
-    progress:'Pregunta {n} de 4',back:'← Atrás',next:'Siguiente →',finish:'Ver mis consejos',restart:'Volver a empezar',
+    progress:'Pregunta {n} de 4',progressLabel:'Progreso del cuestionario',back:'← Atrás',next:'Siguiente →',finish:'Ver mis consejos',restart:'Volver a empezar',
     questions:[
       {text:'¿Aparece algún dato privado, como tu dirección, colegio, teléfono o contraseña?',answers:['Sí, aparece al menos uno','No','No estoy seguro/a'],scores:[2,0,1]},
       {text:'¿La foto muestra dónde estás ahora, tu rutina o a otra persona?',answers:['Sí, o quizá','No','No estoy seguro/a'],scores:[2,0,1]},
@@ -1342,7 +1401,7 @@ const kidsQuizContent={
     }
   },
   ca:{
-    progress:'Pregunta {n} de 4',back:'← Enrere',next:'Següent →',finish:'Veure els meus consells',restart:'Torna a començar',
+    progress:'Pregunta {n} de 4',progressLabel:'Progrés del qüestionari',back:'← Enrere',next:'Següent →',finish:'Veure els meus consells',restart:'Torna a començar',
     questions:[
       {text:'Hi surt alguna dada privada, com ara l’adreça, l’escola, el telèfon o una contrasenya?',answers:['Sí, n’hi surt alguna','No','No n’estic segur/a'],scores:[2,0,1]},
       {text:'A la foto es veu on ets ara, la teva rutina o una altra persona?',answers:['Sí, o potser','No','No n’estic segur/a'],scores:[2,0,1]},
@@ -1356,7 +1415,7 @@ const kidsQuizContent={
     }
   },
   en:{
-    progress:'Question {n} of 4',back:'← Back',next:'Next →',finish:'Show my tips',restart:'Start again',
+    progress:'Question {n} of 4',progressLabel:'Quiz progress',back:'← Back',next:'Next →',finish:'Show my tips',restart:'Start again',
     questions:[
       {text:'Does it show private details such as your address, school, phone number, or password?',answers:['Yes, at least one detail','No','I’m not sure'],scores:[2,0,1]},
       {text:'Does the photo show where you are now, your routine, or another person?',answers:['Yes, or maybe','No','I’m not sure'],scores:[2,0,1]},
@@ -1374,6 +1433,9 @@ const kidsQuizContent={
 function renderKidsQuiz({focusFirstAnswer=false}={}) {
   const lang=kidsQuizContent[langSelect.value]?langSelect.value:'es';
   const copy=kidsQuizContent[lang];
+  kidsQuizBack.textContent=copy.back;
+  kidsQuizReset.textContent=copy.restart;
+  kidsQuizProgress.setAttribute('aria-label',copy.progressLabel);
   quizFeedback.textContent='';
   quizFeedback.classList.remove('quiz-result-stop','quiz-result-pause','quiz-result-review');
   if(kidsQuizFinished) {
@@ -1448,5 +1510,8 @@ kidsQuizReset.addEventListener('click',()=> {
   renderKidsQuiz();
   kidsQuizOptions.querySelector('.quiz-choice')?.focus()
 });
-langSelect.addEventListener('change',()=>renderKidsQuiz());
+langSelect.addEventListener('change',()=>{
+  renderKidsQuiz();
+  updateKidsModeStatus();
+});
 renderKidsQuiz();
